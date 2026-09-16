@@ -6,7 +6,9 @@
 //
 //   1. Find the user in `users` by email and/or mobile.
 //   2. Read the user's idx_urns (array) and/or idx_urn (single value) field(s).
-//   3. Look up the corresponding record(s) in `idxurns` by _id or idx_urn.
+//   3. Look up the corresponding record(s) in `idxurns` by _id or idx_urn,
+//      reporting every value as either found or not found - a complete
+//      picture of what exists before anything is touched.
 //   4. Delete those idxurns record(s).
 //   5. Back up the user document to `archived_users`.
 //   6. Delete the user document from `users`.
@@ -16,27 +18,30 @@
 // USER_EMAIL_FIELD / USER_MOBILE_FIELD below if this environment differs.
 //
 // Usage:
-//   1. Set searchEmail / searchMobile below (either or both).
-//   2. Leave performDelete = false and run once to see what would happen:
-//        mongosh "your-connection-string/pinnacle" fix_unspecified_error.js
-//   3. Review the report. If it looks right, set performDelete = true and
-//      run again to actually delete the idxurns records, archive the user,
-//      and delete the user record.
+//   mongosh "your-connection-string/pinnacle" fix_unspecified_error.js
+//   The script prompts for an email address and a mobile number - leave
+//   either blank, but not both.
 //
-// Safety: performDelete defaults to false - a dry run only ever reports what
-// it found and what it would do. Nothing is modified until you explicitly
-// set performDelete = true and rerun.
-
-var searchEmail = ''; // e.g. 'someone@example.com' - leave blank to skip
-var searchMobile = ''; // e.g. '0412345678' - leave blank to skip
-var performDelete = false; // set true to actually delete/archive
+// Safety: the script ALWAYS investigates and reports first - nothing is
+// deleted or archived until you review the report and type YES at the
+// prompt. mongosh has no plain (unmasked) interactive prompt, only
+// passwordPrompt() - so every prompt below (email, mobile, and the final
+// YES confirmation) is masked as you type; that's a mongosh limitation, not
+// a secrecy requirement. Typing anything other than exactly YES at the final
+// prompt aborts with no changes made.
 
 var USER_EMAIL_FIELD = 'email';
 var USER_MOBILE_FIELD = 'mobile';
 
 (function () {
+  print('Enter email address (leave blank to skip):');
+  var searchEmail = passwordPrompt().trim();
+
+  print('Enter mobile number (leave blank to skip):');
+  var searchMobile = passwordPrompt().trim();
+
   if (!searchEmail && !searchMobile) {
-    print('Set searchEmail and/or searchMobile before running this script.');
+    print('Both email and mobile were blank - nothing to search for, exiting.');
     return;
   }
 
@@ -80,10 +85,8 @@ var USER_MOBILE_FIELD = 'mobile';
 
   print('idx_urns/idx_urn values found on user: ' + urnValues.join(', '));
 
-  // Step 3: find the corresponding idxurns record(s) by _id or idx_urn.
-  // Tries the raw value against both fields, plus an ObjectId-cast attempt
-  // against _id in case this environment's idxurns._id is an ObjectId rather
-  // than the urn string itself.
+  // Step 3: for EVERY value, look it up in idxurns by _id or idx_urn and
+  // report found-or-not-found - a complete picture, not just the hits.
   function toObjectIdIfValid(value) {
     try {
       return new ObjectId(value);
@@ -95,12 +98,26 @@ var USER_MOBILE_FIELD = 'mobile';
   var matchedIdxurns = [];
   var seenIds = new Set();
 
+  print('');
+  print('idxurns lookup results:');
+
   urnValues.forEach(function (value) {
     var oid = toObjectIdIfValid(value);
     var orClauses = [{ idx_urn: value }, { _id: value }];
     if (oid) orClauses.push({ _id: oid });
 
-    db.idxurns.find({ $or: orClauses }).forEach(function (doc) {
+    var foundForThisValue = db.idxurns.find({ $or: orClauses }).toArray();
+
+    if (foundForThisValue.length === 0) {
+      print('  value=' + value + ' -> NOT FOUND in idxurns');
+      return;
+    }
+
+    foundForThisValue.forEach(function (doc) {
+      var backRefOk = String(doc.userId) === String(user._id);
+      print('  value=' + value + ' -> FOUND _id=' + doc._id + ' idx_urn=' + doc.idx_urn +
+        ' userId=' + doc.userId + (backRefOk ? ' [back-reference matches user]' : ' [WARNING: userId does not match matched user]'));
+
       var idStr = String(doc._id);
       if (!seenIds.has(idStr)) {
         seenIds.add(idStr);
@@ -109,24 +126,22 @@ var USER_MOBILE_FIELD = 'mobile';
     });
   });
 
+  print('');
+
   if (matchedIdxurns.length === 0) {
-    print('No corresponding idxurns records found for these values - nothing to delete, stopping.');
+    print('No corresponding idxurns records found for any value - nothing to delete, stopping.');
     return;
   }
 
-  print('Matched idxurns record(s): ' + matchedIdxurns.length);
-  matchedIdxurns.forEach(function (doc) {
-    var backRefOk = String(doc.userId) === String(user._id);
-    print('  _id=' + doc._id + ' idx_urn=' + doc.idx_urn + ' userId=' + doc.userId +
-      (backRefOk ? ' [back-reference matches user]' : ' [WARNING: userId does not match matched user]'));
-  });
+  print('Summary: ' + matchedIdxurns.length + ' idxurns record(s) would be deleted, out of ' + urnValues.length + ' value(s) checked.');
+  print('If you continue, this will also archive the user to archived_users and delete the user from users.');
+  print('');
+  print('Type YES to continue, or anything else to abort. (Input is masked - this is mongosh\'s only interactive prompt.)');
 
-  if (!performDelete) {
-    print('');
-    print('DRY RUN - no changes made. Set performDelete = true and rerun to:');
-    print('  1. Delete the ' + matchedIdxurns.length + ' idxurns record(s) above');
-    print('  2. Archive the user document to archived_users');
-    print('  3. Delete the user document from users');
+  var confirmation = passwordPrompt();
+
+  if (confirmation !== 'YES') {
+    print('Aborted - no changes made.');
     return;
   }
 

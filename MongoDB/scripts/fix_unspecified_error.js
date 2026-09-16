@@ -17,30 +17,34 @@
 // against a real document (db.users.findOne({})) before first use and adjust
 // USER_EMAIL_FIELD / USER_MOBILE_FIELD below if this environment differs.
 //
-// Usage - pass email/mobile via --eval (either or both, at least one
-// required), no file editing needed:
-//   mongosh "your-connection-string/pinnacle" --eval "var searchEmail='someone@example.com'; var searchMobile='';" fix_unspecified_error.js
+// Usage:
+//   1. Set searchEmail / searchMobile below (either or both required).
+//   2. mongosh "your-connection-string/pinnacle" fix_unspecified_error.js
+// (mongosh does not share variables between --eval and a separately-loaded
+// script file, so passing them on the command line isn't reliable - editing
+// them here is the one mechanism guaranteed to work.)
 //
 // Safety: the script ALWAYS investigates and reports first - nothing is
 // deleted or archived until you review the report and type YES at the final
 // confirmation prompt. mongosh has no plain (unmasked) interactive prompt,
 // only passwordPrompt() - so that confirmation input is masked as you type
-// it; that's a mongosh limitation, not a secrecy requirement (it also always
-// prints its own "Enter password" label, which is why email/mobile are
-// passed via --eval instead of prompted - that label would be actively
-// misleading for those fields). Typing anything other than exactly YES
-// aborts with no changes made.
+// it, and mongosh always labels it "Enter password" regardless of what
+// you're actually confirming; that's a mongosh limitation, not a secrecy
+// requirement. Typing anything other than exactly YES aborts with no
+// changes made.
+
+var searchEmail = ''; // e.g. 'someone@example.com' - leave blank to skip
+var searchMobile = ''; // e.g. '0412345678' - leave blank to skip
 
 var USER_EMAIL_FIELD = 'email';
 var USER_MOBILE_FIELD = 'mobile';
 
 (function () {
-  var searchEmail = (typeof searchEmail !== 'undefined' ? searchEmail : '').trim();
-  var searchMobile = (typeof searchMobile !== 'undefined' ? searchMobile : '').trim();
+  searchEmail = searchEmail.trim();
+  searchMobile = searchMobile.trim();
 
   if (!searchEmail && !searchMobile) {
-    print('No searchEmail/searchMobile passed via --eval - nothing to search for, exiting.');
-    print('Usage: mongosh "conn-string" --eval "var searchEmail=\'x@x.com\'; var searchMobile=\'\';" fix_unspecified_error.js');
+    print('Set searchEmail and/or searchMobile at the top of this file before running it.');
     return;
   }
 
@@ -60,7 +64,7 @@ var USER_MOBILE_FIELD = 'mobile';
   var user = db.users.findOne({ $or: userOrClauses });
 
   if (!user) {
-    print('No matching user found for the given email/mobile - investigation cannot proceed.');
+    print('No matching user found for email=' + searchEmail + ' mobile=' + searchMobile + ' - investigation cannot proceed.');
     return;
   }
 

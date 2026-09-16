@@ -17,31 +17,30 @@
 // against a real document (db.users.findOne({})) before first use and adjust
 // USER_EMAIL_FIELD / USER_MOBILE_FIELD below if this environment differs.
 //
-// Usage:
-//   mongosh "your-connection-string/pinnacle" fix_unspecified_error.js
-//   The script prompts for an email address and a mobile number - leave
-//   either blank, but not both.
+// Usage - pass email/mobile via --eval (either or both, at least one
+// required), no file editing needed:
+//   mongosh "your-connection-string/pinnacle" --eval "var searchEmail='someone@example.com'; var searchMobile='';" fix_unspecified_error.js
 //
 // Safety: the script ALWAYS investigates and reports first - nothing is
-// deleted or archived until you review the report and type YES at the
-// prompt. mongosh has no plain (unmasked) interactive prompt, only
-// passwordPrompt() - so every prompt below (email, mobile, and the final
-// YES confirmation) is masked as you type; that's a mongosh limitation, not
-// a secrecy requirement. Typing anything other than exactly YES at the final
-// prompt aborts with no changes made.
+// deleted or archived until you review the report and type YES at the final
+// confirmation prompt. mongosh has no plain (unmasked) interactive prompt,
+// only passwordPrompt() - so that confirmation input is masked as you type
+// it; that's a mongosh limitation, not a secrecy requirement (it also always
+// prints its own "Enter password" label, which is why email/mobile are
+// passed via --eval instead of prompted - that label would be actively
+// misleading for those fields). Typing anything other than exactly YES
+// aborts with no changes made.
 
 var USER_EMAIL_FIELD = 'email';
 var USER_MOBILE_FIELD = 'mobile';
 
 (function () {
-  print('Enter email address (leave blank to skip):');
-  var searchEmail = passwordPrompt().trim();
-
-  print('Enter mobile number (leave blank to skip):');
-  var searchMobile = passwordPrompt().trim();
+  var searchEmail = (typeof searchEmail !== 'undefined' ? searchEmail : '').trim();
+  var searchMobile = (typeof searchMobile !== 'undefined' ? searchMobile : '').trim();
 
   if (!searchEmail && !searchMobile) {
-    print('Both email and mobile were blank - nothing to search for, exiting.');
+    print('No searchEmail/searchMobile passed via --eval - nothing to search for, exiting.');
+    print('Usage: mongosh "conn-string" --eval "var searchEmail=\'x@x.com\'; var searchMobile=\'\';" fix_unspecified_error.js');
     return;
   }
 
@@ -136,7 +135,8 @@ var USER_MOBILE_FIELD = 'mobile';
   print('Summary: ' + matchedIdxurns.length + ' idxurns record(s) would be deleted, out of ' + urnValues.length + ' value(s) checked.');
   print('If you continue, this will also archive the user to archived_users and delete the user from users.');
   print('');
-  print('Type YES to continue, or anything else to abort. (Input is masked - this is mongosh\'s only interactive prompt.)');
+  print('Type YES to continue, or anything else to abort.');
+  print('(mongosh will label the next line "Enter password" - that\'s just its only prompt, type YES there.)');
 
   var confirmation = passwordPrompt();
 

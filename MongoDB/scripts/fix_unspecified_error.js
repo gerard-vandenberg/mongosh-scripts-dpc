@@ -1,17 +1,27 @@
 // fix_unspecified_error.js
 //
-// Daily "unspecified error" data fix. An investigator is given a user's email
-// address and/or mobile number, and this script carries out the standard
-// remediation:
+// Daily "unspecified error" data fix, with built-in restore for the same
+// user/incident.
 //
+// DELETE mode (mode = 'delete', the default):
 //   1. Find the user in `users` by email and/or mobile.
 //   2. Read the user's idx_urns (array) and/or idx_urn (single value) field(s).
 //   3. Look up the corresponding record(s) in `idxurns` by _id or idx_urn,
 //      reporting every value as either found or not found - a complete
 //      picture of what exists before anything is touched.
-//   4. Delete those idxurns record(s).
-//   5. Back up the user document to `archived_users`.
-//   6. Delete the user document from `users`.
+//   4. Delete those idxurns record(s) from `idxurns`.
+//   5. Back up the user document to `archived_users`, WITH the deleted
+//      idxurns record(s) embedded on it (field: deletedIdxurnsRecords) -
+//      only ever the one archive collection, but a full, exact copy of both
+//      is kept for restore - then delete the user from `users`.
+//
+// RESTORE mode (mode = 'restore') - undoes a previous delete-mode run for
+// the same email/mobile:
+//   1. Find the archived user in `archived_users` by email and/or mobile.
+//   2. Report what would be restored - the user, and the idxurns record(s)
+//      embedded on it.
+//   3. Restore the idxurns record(s) to `idxurns` and the user to `users`,
+//      then remove the archived record from `archived_users`.
 //
 // Field names assumed on `users`: email (top-level), mobile (nested -
 // phoneNumber.value, e.g. "493553467", country code "+61" stored separately
@@ -22,13 +32,14 @@
 //
 // Usage:
 //   1. Set searchEmail / searchMobile below (either or both required).
-//   2. mongosh "your-connection-string/pinnacle" fix_unspecified_error.js
+//   2. Set mode to 'delete' (default) or 'restore'.
+//   3. mongosh "your-connection-string/pinnacle" fix_unspecified_error.js
 // (mongosh does not share variables between --eval and a separately-loaded
 // script file, so passing them on the command line isn't reliable - editing
 // them here is the one mechanism guaranteed to work.)
 //
-// Safety: the script ALWAYS investigates and reports first - nothing is
-// deleted or archived until you review the report and type YES at the final
+// Safety: ALWAYS investigates and reports first in both modes - nothing is
+// changed until you review the report and type YES at the final
 // confirmation prompt. mongosh has no plain (unmasked) interactive prompt,
 // only passwordPrompt() - so that confirmation input is masked as you type
 // it, and mongosh always labels it "Enter password" regardless of what
@@ -36,8 +47,9 @@
 // requirement. Typing anything other than exactly YES aborts with no
 // changes made.
 
-var searchEmail = 'iamygovid12@test.gov.au'; // e.g. 'someone@example.com' - leave blank to skip
+var searchEmail = ''; // e.g. 'someone@example.com' - leave blank to skip
 var searchMobile = ''; // e.g. '0412345678' - leave blank to skip
+var mode = 'delete'; // 'delete' or 'restore'
 
 var USER_EMAIL_FIELD = 'email';
 var USER_MOBILE_FIELD = 'phoneNumber.value'; // nested field - see normalizeAuMobile below
@@ -60,8 +72,9 @@ function normalizeAuMobile(raw) {
 
 // For display only - returns a shallow copy with noisy/large fields omitted
 // (idx_token holds access_token/refresh_token, so dropping it also keeps
-// those secrets out of the terminal/log). The real, unmodified document is
-// still what gets deleted/archived - this only affects what's printed.
+// those secrets out of the terminal/log) and any archive bookkeeping fields
+// stripped. The real, unmodified document is still what gets
+// deleted/archived/restored - this only affects what's printed.
 function sanitizeForDisplay(doc) {
   var copy = Object.assign({}, doc);
   delete copy.devices;
@@ -72,57 +85,39 @@ function sanitizeForDisplay(doc) {
   delete copy.recentlyVisitedServices;
   delete copy.linkedServices;
   delete copy.idx_token;
+  delete copy.archivedAt;
+  delete copy.archivedReason;
+  delete copy.deletedIdxurnsRecords; // printed separately in restore mode, not as part of the raw user dump
   return copy;
 }
 
 var EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 var AU_MOBILE_NORMALIZED_PATTERN = /^4\d{8}$/; // 9 digits, starts with 4 - matches normalizeAuMobile's output
 
-(function () {
-  searchEmail = searchEmail.trim();
-  searchMobile = searchMobile.trim();
-
-  if (!searchEmail && !searchMobile) {
-    print('Set searchEmail and/or searchMobile at the top of this file before running it.');
-    return;
+function toObjectIdIfValid(value) {
+  try {
+    return new ObjectId(value);
+  } catch (e) {
+    return null;
   }
+}
 
-  if (searchEmail && !EMAIL_PATTERN.test(searchEmail)) {
-    print('searchEmail does not look like a valid email address: ' + searchEmail);
-    return;
-  }
-
-  var normalizedMobile = searchMobile ? normalizeAuMobile(searchMobile) : '';
-  if (searchMobile && !AU_MOBILE_NORMALIZED_PATTERN.test(normalizedMobile)) {
-    print('searchMobile does not look like a valid Australian mobile number: ' + searchMobile +
-      ' (normalized to "' + normalizedMobile + '")');
-    return;
-  }
-
-  // Step 1: find the user
-  var userOrClauses = [];
+function findUserByEmailOrMobile(collectionName, searchEmail, normalizedMobile) {
+  var orClauses = [];
   if (searchEmail) {
     var emailClause = {};
     emailClause[USER_EMAIL_FIELD] = searchEmail;
-    userOrClauses.push(emailClause);
+    orClauses.push(emailClause);
   }
   if (normalizedMobile) {
     var mobileClause = {};
     mobileClause[USER_MOBILE_FIELD] = normalizedMobile;
-    userOrClauses.push(mobileClause);
+    orClauses.push(mobileClause);
   }
+  return db.getCollection(collectionName).findOne({ $or: orClauses });
+}
 
-  var user = db.users.findOne({ $or: userOrClauses });
-
-  if (!user) {
-    print('No matching user found for email=' + searchEmail + ' mobile=' + searchMobile +
-      (normalizedMobile ? ' (normalized to ' + normalizedMobile + ')' : '') + ' - investigation cannot proceed.');
-    return;
-  }
-
-  print('Matched user record (this is the exact record that would be archived and deleted):');
-  printjson(sanitizeForDisplay(user));
-
+function runDeleteFlow(user) {
   // Step 2: gather idx_urns / idx_urn values off the user document
   var urnValues = [];
   if (Array.isArray(user.idx_urns)) {
@@ -141,14 +136,6 @@ var AU_MOBILE_NORMALIZED_PATTERN = /^4\d{8}$/; // 9 digits, starts with 4 - matc
 
   // Step 3: for EVERY value, look it up in idxurns by _id or idx_urn and
   // report found-or-not-found - a complete picture, not just the hits.
-  function toObjectIdIfValid(value) {
-    try {
-      return new ObjectId(value);
-    } catch (e) {
-      return null;
-    }
-  }
-
   var matchedIdxurns = [];
   var seenIds = new Set();
 
@@ -189,8 +176,9 @@ var AU_MOBILE_NORMALIZED_PATTERN = /^4\d{8}$/; // 9 digits, starts with 4 - matc
     return;
   }
 
-  print('Summary: ' + matchedIdxurns.length + ' idxurns record(s) would be deleted, out of ' + urnValues.length + ' value(s) checked.');
-  print('If you continue, this will also archive the user to archived_users and delete the user from users.');
+  print('Summary: ' + matchedIdxurns.length + ' idxurns record(s) would be deleted (NOT backed up - not reversible),');
+  print('out of ' + urnValues.length + ' value(s) checked. This will also back up and delete the user from users.');
+  print('(Both can be undone afterwards - rerun this script with mode = \'restore\' and the same searchEmail/searchMobile.)');
   print('');
   print('Type YES to continue, or anything else to abort.');
   print('(mongosh will label the next line "Enter password" - that\'s just its only prompt, type YES there.)');
@@ -202,22 +190,126 @@ var AU_MOBILE_NORMALIZED_PATTERN = /^4\d{8}$/; // 9 digits, starts with 4 - matc
     return;
   }
 
-  // Step 4: delete the matched idxurns records
+  // Step 4: delete the matched idxurns records. Not kept in a separate
+  // collection - a full, unmodified copy of each is embedded on the
+  // archived_users document itself (below) so restore mode can recreate
+  // them exactly, without a second archive collection to manage.
   var idxurnsIds = matchedIdxurns.map(function (doc) { return doc._id; });
   var deleteIdxurnsResult = db.idxurns.deleteMany({ _id: { $in: idxurnsIds } });
   print('Deleted idxurns records: ' + deleteIdxurnsResult.deletedCount);
 
-  // Step 5: back up the user document to archived_users before removing it
-  var archivedDoc = Object.assign({}, user);
-  archivedDoc.archivedAt = new Date();
-  archivedDoc.archivedReason = 'unspecified error data fix';
-  db.archived_users.insertOne(archivedDoc);
-  print('User archived to archived_users (_id: ' + user._id + ')');
+  // Step 5: back up the user document (plus the deleted idxurns records,
+  // embedded) to archived_users before removing the user
+  var archivedUserDoc = Object.assign({}, user);
+  archivedUserDoc.archivedAt = new Date();
+  archivedUserDoc.archivedReason = 'unspecified error data fix';
+  archivedUserDoc.deletedIdxurnsRecords = matchedIdxurns;
+  db.archived_users.insertOne(archivedUserDoc);
+  print('User archived to archived_users (_id: ' + user._id + '), with ' + matchedIdxurns.length + ' idxurns record(s) embedded for restore');
 
-  // Step 6: delete the user document from users
   var deleteUserResult = db.users.deleteOne({ _id: user._id });
   print('Deleted user record: ' + deleteUserResult.deletedCount);
 
   print('');
   print('Data fix complete for user ' + user._id + '.');
+}
+
+function runRestoreFlow(archivedUser) {
+  print('Found archived user record (this is the exact record that would be restored to users):');
+  printjson(sanitizeForDisplay(archivedUser));
+
+  var deletedIdxurnsRecords = Array.isArray(archivedUser.deletedIdxurnsRecords) ? archivedUser.deletedIdxurnsRecords : [];
+
+  print('');
+  if (deletedIdxurnsRecords.length === 0) {
+    print('No idxurns records embedded on this archived user - nothing to restore in idxurns.');
+  } else {
+    print('idxurns record(s) that would be restored (' + deletedIdxurnsRecords.length + '):');
+    deletedIdxurnsRecords.forEach(function (doc) {
+      printjson(sanitizeForDisplay(doc));
+    });
+  }
+
+  print('');
+  print('If you continue, this will restore the user above to users, restore the idxurns record(s) above to');
+  print('idxurns, and remove the archived record from archived_users.');
+  print('');
+  print('Type YES to continue, or anything else to abort.');
+  print('(mongosh will label the next line "Enter password" - that\'s just its only prompt, type YES there.)');
+
+  var confirmation = passwordPrompt();
+
+  if (confirmation !== 'YES') {
+    print('Aborted - no changes made.');
+    return;
+  }
+
+  if (deletedIdxurnsRecords.length > 0) {
+    db.idxurns.insertMany(deletedIdxurnsRecords);
+    print('Restored ' + deletedIdxurnsRecords.length + ' idxurns record(s) to idxurns');
+  }
+
+  var restoredUserDoc = Object.assign({}, archivedUser);
+  delete restoredUserDoc.archivedAt;
+  delete restoredUserDoc.archivedReason;
+  delete restoredUserDoc.deletedIdxurnsRecords;
+  db.users.insertOne(restoredUserDoc);
+  db.archived_users.deleteOne({ _id: archivedUser._id });
+  print('Restored user to users and removed from archived_users (_id: ' + archivedUser._id + ')');
+
+  print('');
+  print('Restore complete for user ' + archivedUser._id + '.');
+}
+
+(function () {
+  searchEmail = searchEmail.trim();
+  searchMobile = searchMobile.trim();
+
+  if (!searchEmail && !searchMobile) {
+    print('Set searchEmail and/or searchMobile at the top of this file before running it.');
+    return;
+  }
+
+  if (searchEmail && !EMAIL_PATTERN.test(searchEmail)) {
+    print('searchEmail does not look like a valid email address: ' + searchEmail);
+    return;
+  }
+
+  var normalizedMobile = searchMobile ? normalizeAuMobile(searchMobile) : '';
+  if (searchMobile && !AU_MOBILE_NORMALIZED_PATTERN.test(normalizedMobile)) {
+    print('searchMobile does not look like a valid Australian mobile number: ' + searchMobile +
+      ' (normalized to "' + normalizedMobile + '")');
+    return;
+  }
+
+  if (mode !== 'delete' && mode !== 'restore') {
+    print('mode must be \'delete\' or \'restore\' - got: ' + mode);
+    return;
+  }
+
+  if (mode === 'restore') {
+    var archivedUser = findUserByEmailOrMobile('archived_users', searchEmail, normalizedMobile);
+
+    if (!archivedUser) {
+      print('No archived user found in archived_users for email=' + searchEmail + ' mobile=' + searchMobile +
+        (normalizedMobile ? ' (normalized to ' + normalizedMobile + ')' : '') + ' - nothing to restore.');
+      return;
+    }
+
+    runRestoreFlow(archivedUser);
+    return;
+  }
+
+  var user = findUserByEmailOrMobile('users', searchEmail, normalizedMobile);
+
+  if (!user) {
+    print('No matching user found for email=' + searchEmail + ' mobile=' + searchMobile +
+      (normalizedMobile ? ' (normalized to ' + normalizedMobile + ')' : '') + ' - investigation cannot proceed.');
+    return;
+  }
+
+  print('Matched user record (this is the exact record that would be archived and deleted):');
+  printjson(sanitizeForDisplay(user));
+
+  runDeleteFlow(user);
 })();

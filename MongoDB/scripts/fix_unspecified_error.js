@@ -74,12 +74,27 @@ function sanitizeForDisplay(doc) {
   return copy;
 }
 
+var EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+var AU_MOBILE_NORMALIZED_PATTERN = /^4\d{8}$/; // 9 digits, starts with 4 - matches normalizeAuMobile's output
+
 (function () {
   searchEmail = searchEmail.trim();
   searchMobile = searchMobile.trim();
 
   if (!searchEmail && !searchMobile) {
     print('Set searchEmail and/or searchMobile at the top of this file before running it.');
+    return;
+  }
+
+  if (searchEmail && !EMAIL_PATTERN.test(searchEmail)) {
+    print('searchEmail does not look like a valid email address: ' + searchEmail);
+    return;
+  }
+
+  var normalizedMobile = searchMobile ? normalizeAuMobile(searchMobile) : '';
+  if (searchMobile && !AU_MOBILE_NORMALIZED_PATTERN.test(normalizedMobile)) {
+    print('searchMobile does not look like a valid Australian mobile number: ' + searchMobile +
+      ' (normalized to "' + normalizedMobile + '")');
     return;
   }
 
@@ -90,7 +105,6 @@ function sanitizeForDisplay(doc) {
     emailClause[USER_EMAIL_FIELD] = searchEmail;
     userOrClauses.push(emailClause);
   }
-  var normalizedMobile = searchMobile ? normalizeAuMobile(searchMobile) : '';
   if (normalizedMobile) {
     var mobileClause = {};
     mobileClause[USER_MOBILE_FIELD] = normalizedMobile;

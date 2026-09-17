@@ -34,7 +34,7 @@
 // changes made.
 
 var searchEmail = ''; // e.g. 'someone@example.com' - leave blank to skip
-var searchMobile = ''; // e.g. '0412345678' - leave blank to skip
+var searchMobile = '0493553467'; // e.g. '0412345678' - leave blank to skip
 
 var USER_EMAIL_FIELD = 'email';
 var USER_MOBILE_FIELD = 'mobile';

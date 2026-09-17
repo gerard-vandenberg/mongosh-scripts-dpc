@@ -37,7 +37,7 @@
 // changes made.
 
 var searchEmail = ''; // e.g. 'someone@example.com' - leave blank to skip
-var searchMobile = '0421800321'; // e.g. '0412345678' - leave blank to skip
+var searchMobile = ''; // e.g. '0412345678' - leave blank to skip
 
 var USER_EMAIL_FIELD = 'email';
 var USER_MOBILE_FIELD = 'phoneNumber.value'; // nested field - see normalizeAuMobile below
@@ -55,6 +55,23 @@ function normalizeAuMobile(raw) {
     digits = digits.slice(1);
   }
   return digits;
+}
+
+// For display only - returns a shallow copy with noisy/large fields omitted
+// (idx_token holds access_token/refresh_token, so dropping it also keeps
+// those secrets out of the terminal/log). The real, unmodified document is
+// still what gets deleted/archived - this only affects what's printed.
+function sanitizeForDisplay(doc) {
+  var copy = Object.assign({}, doc);
+  delete copy.devices;
+  delete copy.settings;
+  delete copy.flags;
+  delete copy.services;
+  delete copy.profiles;
+  delete copy.recentlyVisitedServices;
+  delete copy.linkedServices;
+  delete copy.idx_token;
+  return copy;
 }
 
 (function () {
@@ -89,7 +106,7 @@ function normalizeAuMobile(raw) {
   }
 
   print('Matched user record (this is the exact record that would be archived and deleted):');
-  printjson(user);
+  printjson(sanitizeForDisplay(user));
 
   // Step 2: gather idx_urns / idx_urn values off the user document
   var urnValues = [];
@@ -137,8 +154,10 @@ function normalizeAuMobile(raw) {
 
     foundForThisValue.forEach(function (doc) {
       var backRefOk = String(doc.userId) === String(user._id);
-      print('  value=' + value + ' -> FOUND _id=' + doc._id + ' idx_urn=' + doc.idx_urn +
-        ' userId=' + doc.userId + (backRefOk ? ' [back-reference matches user]' : ' [WARNING: userId does not match matched user]'));
+      print('  value=' + value + ' -> FOUND' +
+        (backRefOk ? ' [back-reference matches user]' : ' [WARNING: userId does not match matched user]') +
+        ' - exact record that would be deleted:');
+      printjson(sanitizeForDisplay(doc));
 
       var idStr = String(doc._id);
       if (!seenIds.has(idStr)) {

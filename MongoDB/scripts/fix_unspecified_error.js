@@ -13,9 +13,12 @@
 //   5. Back up the user document to `archived_users`.
 //   6. Delete the user document from `users`.
 //
-// Field names assumed on `users` (email, mobile, idx_urns, idx_urn) - verify
-// against a real document (db.users.findOne({})) before first use and adjust
-// USER_EMAIL_FIELD / USER_MOBILE_FIELD below if this environment differs.
+// Field names assumed on `users`: email (top-level), mobile (nested -
+// phoneNumber.value, e.g. "493553467", country code "+61" stored separately
+// in phoneNumber.countryCode and NOT part of the match value), idx_urns,
+// idx_urn. Verify against a real document (db.users.findOne({})) before
+// first use and adjust USER_EMAIL_FIELD / USER_MOBILE_FIELD /
+// normalizeAuMobile below if this environment differs.
 //
 // Usage:
 //   1. Set searchEmail / searchMobile below (either or both required).
@@ -34,10 +37,25 @@
 // changes made.
 
 var searchEmail = ''; // e.g. 'someone@example.com' - leave blank to skip
-var searchMobile = '0493553467'; // e.g. '0412345678' - leave blank to skip
+var searchMobile = '0421800321'; // e.g. '0412345678' - leave blank to skip
 
 var USER_EMAIL_FIELD = 'email';
-var USER_MOBILE_FIELD = 'mobile';
+var USER_MOBILE_FIELD = 'phoneNumber.value'; // nested field - see normalizeAuMobile below
+
+// users.phoneNumber.value stores the Australian national number with no
+// leading 0 and no country code (e.g. "493553467" for +61 493 553 467).
+// Strips a leading "0" (local format, e.g. "0493553467") or a leading
+// "61"/"+61" (e.g. "+61493553467") so whichever format the investigator was
+// given still matches what's actually stored.
+function normalizeAuMobile(raw) {
+  var digits = raw.replace(/\D/g, '');
+  if (digits.indexOf('61') === 0 && digits.length === 11) {
+    digits = digits.slice(2);
+  } else if (digits.indexOf('0') === 0 && digits.length === 10) {
+    digits = digits.slice(1);
+  }
+  return digits;
+}
 
 (function () {
   searchEmail = searchEmail.trim();
@@ -55,22 +73,23 @@ var USER_MOBILE_FIELD = 'mobile';
     emailClause[USER_EMAIL_FIELD] = searchEmail;
     userOrClauses.push(emailClause);
   }
-  if (searchMobile) {
+  var normalizedMobile = searchMobile ? normalizeAuMobile(searchMobile) : '';
+  if (normalizedMobile) {
     var mobileClause = {};
-    mobileClause[USER_MOBILE_FIELD] = searchMobile;
+    mobileClause[USER_MOBILE_FIELD] = normalizedMobile;
     userOrClauses.push(mobileClause);
   }
 
   var user = db.users.findOne({ $or: userOrClauses });
 
   if (!user) {
-    print('No matching user found for email=' + searchEmail + ' mobile=' + searchMobile + ' - investigation cannot proceed.');
+    print('No matching user found for email=' + searchEmail + ' mobile=' + searchMobile +
+      (normalizedMobile ? ' (normalized to ' + normalizedMobile + ')' : '') + ' - investigation cannot proceed.');
     return;
   }
 
-  print('Matched user _id: ' + user._id);
-  print('  ' + USER_EMAIL_FIELD + ': ' + user[USER_EMAIL_FIELD]);
-  print('  ' + USER_MOBILE_FIELD + ': ' + user[USER_MOBILE_FIELD]);
+  print('Matched user record (this is the exact record that would be archived and deleted):');
+  printjson(user);
 
   // Step 2: gather idx_urns / idx_urn values off the user document
   var urnValues = [];

@@ -36,7 +36,7 @@
 // requirement. Typing anything other than exactly YES aborts with no
 // changes made.
 
-var searchEmail = ''; // e.g. 'someone@example.com' - leave blank to skip
+var searchEmail = 'iamygovid12@test.gov.au'; // e.g. 'someone@example.com' - leave blank to skip
 var searchMobile = ''; // e.g. '0412345678' - leave blank to skip
 
 var USER_EMAIL_FIELD = 'email';
@@ -44,15 +44,16 @@ var USER_MOBILE_FIELD = 'phoneNumber.value'; // nested field - see normalizeAuMo
 
 // users.phoneNumber.value stores the Australian national number with no
 // leading 0 and no country code (e.g. "493553467" for +61 493 553 467).
-// Strips a leading "0" (local format, e.g. "0493553467") or a leading
-// "61"/"+61" (e.g. "+61493553467") so whichever format the investigator was
-// given still matches what's actually stored.
+// Strips a leading "61"/"+61" (e.g. "+61493553467"), otherwise strips ALL
+// leading zeros (local format "0493553467", or a fat-fingered
+// "000493553467") so whichever format the investigator was given still
+// matches what's actually stored.
 function normalizeAuMobile(raw) {
   var digits = raw.replace(/\D/g, '');
   if (digits.indexOf('61') === 0 && digits.length === 11) {
     digits = digits.slice(2);
-  } else if (digits.indexOf('0') === 0 && digits.length === 10) {
-    digits = digits.slice(1);
+  } else {
+    digits = digits.replace(/^0+/, '');
   }
   return digits;
 }
